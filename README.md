@@ -5,8 +5,8 @@
 
 Replaces byte-identical repeated tool outputs (`terminal`, `search_files`, MCP servers, connectors, third-party toolsets) with a compact stub **before they enter model context**, and exposes an explicit `recall_result(result_id)` tool so the model can restore the full original bytes on demand.
 
-[![ToolRecall Light Walkthrough Video](thumbnail.png)](demo.mp4)
-> 🎥 **[Watch the Narrated Walkthrough Video (`demo.mp4`, 1080p with English Voiceover)](demo.mp4)** — or run `python3 demo.py` locally in your terminal.
+[![ToolRecall Light Walkthrough Video](assets/thumbnail.png)](assets/demo.mp4)
+> 🎥 **[Watch the Narrated Walkthrough Video (`assets/demo.mp4`, 1080p with English Voiceover)](assets/demo.mp4)** — or run `python3 demo.py` locally in your terminal.
 
 ---
 

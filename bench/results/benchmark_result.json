@@ -1,0 +1,203 @@
+{
+  "plugin": "toolrecall-light",
+  "tagline": "In-process deduplication and tool recall for Hermes Agent",
+  "macro_empirical_receipts": {
+    "sessions_analyzed": 668,
+    "total_tool_results": 131520,
+    "total_candidates_ge_2000_chars": 28003,
+    "exact_intra_session_duplicates": 16844,
+    "duplicate_percentage": 60.15,
+    "bytes_duplicated_raw": 74542086,
+    "megabytes_duplicated": 71.09,
+    "estimated_prompt_tokens_duplicated": 18635521,
+    "tool_breakdown": [
+      {
+        "tool": "terminal",
+        "repeats": 2067,
+        "mb": 10.15
+      },
+      {
+        "tool": "read_file",
+        "repeats": 1182,
+        "mb": 7.49
+      },
+      {
+        "tool": "session_search",
+        "repeats": 136,
+        "mb": 2.63
+      },
+      {
+        "tool": "skill_view",
+        "repeats": 178,
+        "mb": 2.42
+      },
+      {
+        "tool": "patch",
+        "repeats": 333,
+        "mb": 1.08
+      },
+      {
+        "tool": "browser_exec",
+        "repeats": 174,
+        "mb": 0.96
+      },
+      {
+        "tool": "search_files",
+        "repeats": 233,
+        "mb": 0.93
+      },
+      {
+        "tool": "web_search",
+        "repeats": 102,
+        "mb": 0.43
+      },
+      {
+        "tool": "execute_code",
+        "repeats": 58,
+        "mb": 0.41
+      },
+      {
+        "tool": "skills_list",
+        "repeats": 30,
+        "mb": 0.3
+      },
+      {
+        "tool": "web_extract",
+        "repeats": 22,
+        "mb": 0.13
+      },
+      {
+        "tool": "tool_describe",
+        "repeats": 16,
+        "mb": 0.07
+      },
+      {
+        "tool": "tool_search",
+        "repeats": 10,
+        "mb": 0.02
+      }
+    ]
+  },
+  "turns_executed": 18,
+  "stubs_emitted": 11,
+  "bytes_stubbed_total": 35786,
+  "recalls_performed": 1,
+  "avg_recall_latency_ms": 0.24558600125601515,
+  "cumulative_prompt_tokens_baseline": 135934,
+  "cumulative_prompt_tokens_treatment": 62586,
+  "net_tokens_avoided": 73348,
+  "token_reduction_percent": 53.96,
+  "baseline_cost_usd": 0.4078,
+  "treatment_cost_usd": 0.1878,
+  "cost_saved_usd": 0.22,
+  "turn_by_turn": [
+    {
+      "turn": 1,
+      "baseline_tokens": 889,
+      "treatment_tokens": 889,
+      "delta": 0
+    },
+    {
+      "turn": 2,
+      "baseline_tokens": 1968,
+      "treatment_tokens": 1968,
+      "delta": 0
+    },
+    {
+      "turn": 3,
+      "baseline_tokens": 2494,
+      "treatment_tokens": 2494,
+      "delta": 0
+    },
+    {
+      "turn": 4,
+      "baseline_tokens": 3383,
+      "treatment_tokens": 2538,
+      "delta": 845
+    },
+    {
+      "turn": 5,
+      "baseline_tokens": 4463,
+      "treatment_tokens": 2584,
+      "delta": 1879
+    },
+    {
+      "turn": 6,
+      "baseline_tokens": 4476,
+      "treatment_tokens": 2597,
+      "delta": 1879
+    },
+    {
+      "turn": 7,
+      "baseline_tokens": 5002,
+      "treatment_tokens": 2641,
+      "delta": 2361
+    },
+    {
+      "turn": 8,
+      "baseline_tokens": 5891,
+      "treatment_tokens": 2685,
+      "delta": 3206
+    },
+    {
+      "turn": 9,
+      "baseline_tokens": 6780,
+      "treatment_tokens": 2730,
+      "delta": 4050
+    },
+    {
+      "turn": 10,
+      "baseline_tokens": 7670,
+      "treatment_tokens": 2774,
+      "delta": 4896
+    },
+    {
+      "turn": 11,
+      "baseline_tokens": 8559,
+      "treatment_tokens": 3663,
+      "delta": 4896
+    },
+    {
+      "turn": 12,
+      "baseline_tokens": 9448,
+      "treatment_tokens": 3707,
+      "delta": 5741
+    },
+    {
+      "turn": 13,
+      "baseline_tokens": 10527,
+      "treatment_tokens": 4787,
+      "delta": 5740
+    },
+    {
+      "turn": 14,
+      "baseline_tokens": 11607,
+      "treatment_tokens": 4832,
+      "delta": 6775
+    },
+    {
+      "turn": 15,
+      "baseline_tokens": 12133,
+      "treatment_tokens": 5358,
+      "delta": 6775
+    },
+    {
+      "turn": 16,
+      "baseline_tokens": 12659,
+      "treatment_tokens": 5402,
+      "delta": 7257
+    },
+    {
+      "turn": 17,
+      "baseline_tokens": 13548,
+      "treatment_tokens": 5446,
+      "delta": 8102
+    },
+    {
+      "turn": 18,
+      "baseline_tokens": 14437,
+      "treatment_tokens": 5491,
+      "delta": 8946
+    }
+  ]
+}

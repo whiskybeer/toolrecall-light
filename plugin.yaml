@@ -1,0 +1,15 @@
+name: toolrecall-light
+version: 0.1.0
+description: >-
+  ToolRecall Light: In-process tool result deduplication for Hermes Agent. Replace byte-identical
+  repeated tool results (terminal, search, MCP, connectors) with a compact stub before they enter model
+  context, and expose recall_result(id) to restore full bytes on demand. Stdlib only, fail-open, no core patches.
+author: Robin Schultka
+license: MIT
+kind: standalone
+requires_hermes: ">=0.23.0"
+provides_tools:
+  - recall_result
+provides_hooks:
+  - transform_tool_result
+  - post_compaction

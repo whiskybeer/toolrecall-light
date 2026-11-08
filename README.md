@@ -5,6 +5,9 @@
 
 Replaces byte-identical repeated tool outputs (`terminal`, `search_files`, MCP servers, connectors, third-party toolsets) with a compact stub **before they enter model context**, and exposes an explicit `recall_result(result_id)` tool so the model can restore the full original bytes on demand.
 
+[![ToolRecall Light Walkthrough Video](thumbnail.png)](demo.mp4)
+> 🎥 **[Watch the Narrated Walkthrough Video (`demo.mp4`, 1080p with English Voiceover)](demo.mp4)** — or run `python3 demo.py` locally in your terminal.
+
 ---
 
 ## Why ToolRecall Light?
@@ -61,6 +64,7 @@ If the agent needs the full traceback or compiler lines, it invokes `recall_resu
 3. **100% Fail-Open:** Any database error or exception cleanly returns `None` (passes through raw result untouched).
 4. **Zero Runtime Dependencies:** Python stdlib only (`sqlite3`, `hashlib`, `json`).
 5. **No Core Overrides:** Built on official Hermes v2 hooks (`transform_tool_result`, `post_compaction`) and `ctx.register_tool` (Catalog Rule 9 compliant).
+6. **Defense-in-Depth Security:** Parameterized SQL queries, 2 MB payload cap (`MAX_CHARS`), cryptographic SHA-256 verification, and zero network egress. See [`SECURITY.md`](SECURITY.md) for the full threat model and trust boundary documentation.
 
 ---
 

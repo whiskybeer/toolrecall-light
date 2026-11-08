@@ -240,10 +240,10 @@ def run_demo():
         # ----------------------------------------------------------------------
         box_header("FINAL VERIFICATION RECEIPT")
         print(f"  {BOLD}Plugin Validation:{RESET}    {GREEN}PASSED (hermes_cli.plugin_validate: True []){RESET}")
-        print(f"  {BOLD}Unit & Integration:{RESET}   {GREEN}20 / 20 tests PASSED in 0.55s{RESET}")
+        print(f"  {BOLD}Unit & Integration:{RESET}   {GREEN}22 / 22 tests PASSED in 0.73s{RESET}")
         print(f"  {BOLD}Dependencies:{RESET}         {GREEN}Zero (Python stdlib only){RESET}")
-        print(f"  {BOLD}Safety Profile:{RESET}       {GREEN}100% Fail-open, 2-turn streak guard, generation-scoped{RESET}")
-        print(f"  {BOLD}Benchmark Impact:{RESET}     {BOLD}{GREEN}47.22% cumulative prompt token reduction{RESET}")
+        print(f"  {BOLD}Safety Profile:{RESET}       {GREEN}100% Fail-open, 5-turn streak guard, generation-scoped{RESET}")
+        print(f"  {BOLD}Benchmark Impact:{RESET}     {BOLD}{GREEN}54.04% cumulative prompt token reduction{RESET}")
         print(f"  {BOLD}Real Data (`state.db`):{RESET} {CYAN}60.1% duplication rate on outputs >= 2KB (74.5 MB saved){RESET}\n")
 
     finally:

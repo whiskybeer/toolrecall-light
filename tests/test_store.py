@@ -3,9 +3,11 @@ import time
 import pytest
 from store import (
     _fallback_db_path,
+    bump_stat,
     gc,
     get_result,
     get_seen,
+    get_stats,
     init_db,
     put_result,
     upsert_seen,
@@ -31,15 +33,27 @@ def test_put_and_get_result(memory_db):
     assert get_result(memory_db, "id-1", session_id="sess-other") is None
 
 
-def test_put_result_shares_identical_hash(memory_db):
+def test_put_result_isolates_sessions(memory_db):
+    """Identical content in two sessions gets one row PER session.
+
+    Regression: reuse was global (``WHERE hash = ?``), so session B's stub carried
+    an id whose row belonged to session A — recall then only worked through the
+    cross-session fallback path. A stub id must resolve inside its own session.
+    """
     id1 = put_result(memory_db, "id-1", "hash-common", "shared content", "sess-1")
     id2 = put_result(memory_db, "id-2", "hash-common", "shared content", "sess-2")
     assert id1 == "id-1"
-    assert id2 == "id-1"  # reused existing id
+    assert id2 == "id-2"  # NOT the other session's id
 
-    # Ensure only 1 row exists in results
-    cur = memory_db.execute("SELECT count(*) FROM results")
-    assert cur.fetchone()[0] == 1
+    # Both sessions can recall their own copy; neither resolves the other's id.
+    assert get_result(memory_db, "id-1", session_id="sess-1") == "shared content"
+    assert get_result(memory_db, "id-2", session_id="sess-2") == "shared content"
+    assert get_result(memory_db, "id-1", session_id="sess-2") is None
+
+    # Same session + same hash still shares one row (no duplicate growth).
+    id3 = put_result(memory_db, "id-3", "hash-common", "shared content", "sess-1")
+    assert id3 == "id-1"
+    assert memory_db.execute("SELECT count(*) FROM results").fetchone()[0] == 2
 
 
 def test_upsert_and_get_seen(memory_db):
@@ -53,6 +67,68 @@ def test_upsert_and_get_seen(memory_db):
     upsert_seen(memory_db, "sess-1", "key-a", "hash-1", generation=0, served_gen=0, streak=1)
     seen2 = get_seen(memory_db, "sess-1", "key-a")
     assert seen2 == ("hash-1", 0, 0, 1)
+
+
+def test_gc_prunes_stale_seen_and_counts(tmp_path):
+    """GC must sweep dead session state, not only result bytes.
+
+    `seen` holds one row per (session, tool+args) forever; pruning only results
+    leaves a permanent index of sessions that ended days ago.
+    """
+    conn = sqlite3.connect(str(tmp_path / "gc.db"))
+    init_db(conn)
+    old = time.time() - 100_000
+    now = time.time()
+
+    put_result(conn, "old", "h-old", "old", "s-old", created_at=old)
+    upsert_seen(conn, "s-old", "k-old", "h-old", 0, 0, 0, updated_at=old)
+    put_result(conn, "new", "h-new", "new", "s-new", created_at=now)
+    upsert_seen(conn, "s-new", "k-new", "h-new", 0, 0, 0, updated_at=now)
+
+    removed = gc(conn, ttl_hours=24.0)
+    assert removed == 2  # one stale result + one stale seen row
+    assert get_result(conn, "old") is None
+    assert get_result(conn, "new") == "new"
+    assert get_seen(conn, "s-old", "k-old") is None
+    assert get_seen(conn, "s-new", "k-new") is not None
+
+    stats = get_stats(conn)
+    assert stats["gc_runs"] == 1
+    assert stats["gc_removed"] == 2
+
+
+def test_stats_counters_roundtrip(memory_db):
+    assert get_stats(memory_db)["stubs"] == 0
+    bump_stat(memory_db, "stubs")
+    bump_stat(memory_db, "stubs")
+    assert bump_stat(memory_db, "stubs") == 3
+    bump_stat(memory_db, "last_stub_at", 1234.5, absolute=True)
+    stats = get_stats(memory_db)
+    assert stats["stubs"] == 3
+    assert stats["last_stub_at"] == 1234.5
+    assert stats["results"] == 0 and stats["seen"] == 0
+
+
+def test_migration_adds_updated_at_to_legacy_seen(tmp_path):
+    """An old store (no updated_at) must keep working after upgrade."""
+    db = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        """
+        CREATE TABLE seen (
+            session_id TEXT NOT NULL, key TEXT NOT NULL, hash TEXT NOT NULL,
+            generation INTEGER NOT NULL, served_gen INTEGER NOT NULL,
+            streak INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (session_id, key)
+        );
+        """
+    )
+    conn.commit()
+    init_db(conn)  # migration
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(seen)")}
+    assert "updated_at" in cols
+    upsert_seen(conn, "s", "k", "h", 0, 0, 0)
+    assert get_seen(conn, "s", "k") == ("h", 0, 0, 0)
 
 
 def test_gc_ttl(memory_db):

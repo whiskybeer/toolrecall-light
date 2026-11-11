@@ -1,5 +1,5 @@
 name: toolrecall-light
-version: 0.1.0
+version: 0.1.1
 description: >-
   ToolRecall Light: In-process tool result deduplication for Hermes Agent. Replace byte-identical
   repeated tool results (terminal, search, MCP, connectors) with a compact stub before they enter model

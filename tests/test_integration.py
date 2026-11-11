@@ -173,3 +173,47 @@ def test_recall_missing_id():
     data = json.loads(resp)
     assert "error" in data
     assert data["error"] == "not found or expired"
+
+
+def test_status_answers_is_it_firing(isolated_plugin):
+    """`status()` distinguishes not-loaded / not-invoked / nothing-qualified.
+
+    Regression: the plugin could be installed and enabled yet never fire, and the
+    only way to notice was to open SQLite and count rows by hand.
+    """
+    empty = plugin.status()
+    assert empty["loads"] == 0
+    assert empty["hook_calls"] == 0
+    assert empty["stubs"] == 0
+
+    ctx = MockPluginContext()
+    plugin.register(ctx)
+    assert plugin.status()["loads"] == 1
+
+    output = "z" * 2500
+    args = {"command": "git status"}
+    first = plugin._on_transform_tool_result(
+        tool_name="terminal", args=args, result=output, session_id="stats-session"
+    )
+    assert first is None  # pass-through, content stored
+    stub = plugin._on_transform_tool_result(
+        tool_name="terminal", args=args, result=output, session_id="stats-session"
+    )
+    assert stub is not None  # stubbed
+
+    stats = plugin.status()
+    assert stats["hook_calls"] == 2
+    assert stats["passes"] == 1
+    assert stats["stubs"] == 1
+    assert stats["last_stub_at"] > 0
+    assert stats["results"] >= 1
+
+
+def test_session_fallback_is_never_the_literal_default():
+    """Id-less sessions must not share stub state (cross-session pointer bug)."""
+    a = plugin._active_session(None, None)
+    b = plugin._active_session(None, None)
+    assert a == b  # stable within the process
+    assert a != "default"
+    assert plugin._active_session("sess-x", None) == "sess-x"
+    assert plugin._active_session(None, "task-y") == "task-y"

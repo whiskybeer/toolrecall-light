@@ -93,10 +93,40 @@ hermes plugins enable toolrecall-light
 
 ---
 
+## Is it firing? (activation is observable)
+
+"Installed" is not "active". A plugin can be on disk, listed in
+`plugins.enabled`, and still never run — a mismatched manifest key, a hook the
+host does not invoke, or every result under the size floor all look identical
+from the outside. This plugin therefore persists its own counters and exposes
+`status()`:
+
+| Signal | Meaning |
+|---|---|
+| `loads == 0` | never registered with the host — check the **manifest key** (`toolrecall-light`), not the directory name, in `plugins.enabled` |
+| `hook_calls == 0` | registered, but `transform_tool_result` is never invoked |
+| `stubs == 0`, `hook_calls > 0` | invoked; nothing qualified (`min_chars` floor, or every tool on the ignore list) |
+| `stubs > 0` | working — `last_stub_at` is the last stub time, `passes` the full sends |
+
+Enable it by the manifest key, never by path:
+
+```bash
+hermes plugins enable toolrecall-light     # key from plugin.yaml "name:"
+hermes plugins list | grep toolrecall      # must read "enabled"
+```
+
+Counters live in the plugin's own SQLite store (`stats` table) and survive log
+rotation; `loads`/`first stub` also emit one INFO line each so the host log
+answers "did it load?" without a shell.
+
+Store hygiene: results carry the bytes behind every stub, so a sweep runs at
+most every 6 h on the stub path (`gc_ttl_hours = 24`), pruning expired results
+**and** dead per-session rows.
+
 ## Validation & Testing
 
 ```bash
-# Run test suite (22/22 unit & integration tests)
+# Run test suite (29/29 unit & integration tests)
 pytest tests/ -v
 
 # Run official Hermes plugin admission check

@@ -24,16 +24,52 @@ In real multi-turn agent sessions, these un-deduplicated tools compound on every
 
 ---
 
-## Empirical Receipts (from Real `state.db` Data)
+## Evidence, by provenance
 
-We queried 668 real Hermes sessions in `state.db` (131,520 tool results):
-* **60.1%** of all tool results $\ge 2,000$ characters are **exact intra-session duplicates**.
-* That accounts for **74.5 MB** (~18.6M tokens) of redundant tool outputs re-ingested across turns.
-* `terminal` alone generated over **2,067** large duplicate results (>10 MB raw).
+Numbers in this project are labelled by how they were produced. Do not read across categories.
 
-In our simulated 20-turn SWE debugging benchmark:
-* **-54.04% prompt tokens avoided** (73,460 tokens saved in a single session).
-* **0.23 ms** average recall latency.
+### 1. Measured — duplicate rate in real Hermes sessions (`state.db`)
+
+Query over the local Hermes `state.db` (snapshot: 659 sessions with tool calls, 135,038 tool
+results; re-computed 2026-11, reproduces within ~3 % of the 668-session figures first published):
+
+* **58.4 %** of tool results ≥ 2,000 characters are **exact intra-session duplicates**
+  (16,859 duplicate rows of 28,866 candidates; 60.1 % on the earlier snapshot).
+* Those duplicates account for **74.6 MB** of redundant payload (71.1 MB on that snapshot).
+* `terminal` alone contributes 2,067 large duplicate results (> 10 MB raw).
+
+This measures **duplication in transcripts**. It is not a token-saving percentage.
+
+### 2. Derived — streak-guard capture efficiency (95.35 %)
+
+Computed by replaying the observed duplicate corpus through the streak algorithm. It says how many
+duplicates the guard still catches at `streak = 5`; it is not a context or cost reduction.
+
+### 3. Modelled — 20-turn A/B simulation (`bench/run_benchmark.py`)
+
+Deterministic and reproducible, **but not a session measurement**: the transcript is a hand-written
+20-turn SWE scenario, tokens are estimated as `chars / 4`, and cost assumes $3.00/M prompt tokens.
+
+* **-54.04 % cumulative prompt tokens** on that synthetic workload (73,348 tokens).
+* Valid **only** for the regime it models: a small fixed context (~1 k tokens/turn) with duplicates
+  that dominate it. It does not transfer to sessions with a ~12 k-token system prompt.
+
+### 4. Measured — live session, real billed ledger (`--usage-file`)
+
+One real Hermes session, 6 identical `terminal` calls, 7,014-char results each, plugin on vs off
+(3 runs per arm, `deepseek-v4.1-flash-1017`, provider usage ledgers):
+
+* total prompt tokens **101,313** (plugin) vs **101,845–101,968** (no plugin) at matched call count
+  — a **~0.5 % difference, inside run-to-run noise**;
+* 2 of 3 plugin runs made an extra API call, so the plugin arm was marginally **more** expensive.
+
+At this scale the stub does not pay for itself. A larger-duplicate workload is the open test.
+
+### 5. Microbenchmark — recall latency
+
+**0.28 ms** average `recall_result` round-trip against local SQLite (in-process, this machine).
+Real for that operation; not a network or end-to-end number.
+
 
 ---
 

@@ -3,7 +3,20 @@
 > **The tool to recall tools.**  
 > Deterministic context deduplication and on-demand tool recall for [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
-## 1. Executive Summary
+## 0. Provenance — read this before quoting a number
+
+| Section | Kind | Reproducible | What it measures |
+|---|---|---|---|
+| 1. Executive summary + §3 per-turn table | **Modelled** | `python3 bench/run_benchmark.py` | A hand-written 20-turn transcript; tokens = `chars / 4`; cost = $3.00/M assumption. **Not a session.** |
+| 2. Macro receipts (`state.db`) | **Measured** (snapshot) | SQL over `~/.hermes/state.db` | Duplication in real transcripts. Re-computed 2026-11: 659 sessions, 28,866 candidates ≥2 KB, 16,859 duplicate rows, 74.6 MB. |
+| 4. Streak guard / capture efficiency | **Derived** | replay of the duplicate corpus | Share of duplicates still caught at `streak = 5` — not a cost reduction. |
+| 5. Recall latency | **Microbenchmark** | `run_benchmark.py` | In-process SQLite round-trip (~0.28 ms). |
+
+The modelled percentage holds **only** in its own regime (small fixed context, duplicates dominate
+it). A measured live session with a ~12 k-token system prompt and 6 × 7 KB duplicates showed ~0.5 %
+difference, inside noise — see the repo README, "Evidence, by provenance".
+
+## 1. Executive Summary — modelled simulation
 
 - **Simulated Scenario:** 20-turn SWE debugging session (pytest, file search, git status, compaction, recall).
 - **Total Turns Executed:** 18
@@ -14,7 +27,7 @@
 - **Baseline Billed Cost (at $3/M prompt tokens):** $0.4078
 - **Treatment Billed Cost (at $3/M prompt tokens):** $0.1878
 - **Per-Session Dollar Savings:** **$0.2200** (53.96% reduction)
-- **Average On-Demand Recall Latency:** **0.25 ms** (sub-millisecond restoration)
+- **Average On-Demand Recall Latency:** **0.28 ms** (sub-millisecond restoration)
 
 ## 2. Macro Empirical Receipts (Real Historical Hermes Sessions)
 

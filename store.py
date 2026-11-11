@@ -1,7 +1,16 @@
 """SQLite storage layer for toolrecall-light.
 
-Persists deduplicated tool results and track seen keys across turns within sessions.
-Supports WAL mode, thread-safety, LRU/TTL garbage collection, and hash-sharing.
+Persists deduplicated tool results, per-session tracking state, and the counters
+that make the plugin's activity observable. Supports WAL mode, thread-safety,
+hash-sharing within a session, and TTL garbage collection.
+
+Why the ``stats`` table exists: the plugin can be installed, enabled, loaded —
+and still never fire (wrong manifest key, hook not registered, every result
+under the size floor). Without a persisted counter the only way to answer "is it
+working?" was to open SQLite and count rows by hand, which is how a dark plugin
+sat unnoticed. ``get_stats`` returns loads, stubs, last_stub_at, results and
+seen rows so a status call can distinguish "not loaded" from "loaded, nothing
+qualifying yet" from "stubbing".
 """
 
 from __future__ import annotations
@@ -48,7 +57,14 @@ CREATE TABLE IF NOT EXISTS seen (
     generation INTEGER NOT NULL,
     served_gen INTEGER NOT NULL,
     streak INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (session_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS stats (
+    key TEXT PRIMARY KEY,
+    value REAL NOT NULL,
+    updated_at REAL NOT NULL
 );
 """
 
@@ -100,9 +116,19 @@ def get_default_connection(db_path: Optional[Path | str] = None) -> sqlite3.Conn
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Ensure database tables and indices are initialized."""
+    """Ensure database tables and indices are initialized (migrates old stores)."""
     with conn:
         conn.executescript(CREATE_SCHEMA_SQL)
+        # Migration: stores created before updated_at existed. Without it every
+        # upsert fails on the missing column, which would turn an upgrade into a
+        # silent no-op (the plugin fails open, so nothing would be logged above
+        # debug).
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(seen)").fetchall()}
+        if "updated_at" not in cols:
+            conn.execute("ALTER TABLE seen ADD COLUMN updated_at REAL NOT NULL DEFAULT 0")
+        # Index AFTER the migration: a legacy table has no updated_at yet, and
+        # CREATE INDEX inside the schema script would abort the whole init.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_seen_updated ON seen(updated_at)")
 
 
 def put_result(
@@ -113,14 +139,24 @@ def put_result(
     session_id: str,
     created_at: Optional[float] = None,
 ) -> str:
-    """Store tool result content. Reuses existing ID if content hash already exists.
+    """Store tool result content. Reuses an existing ID within the SAME session.
 
     Returns the canonical result_id.
+
+    Scope note: reuse is per session, not global. A stub carries the id of the
+    row that holds its bytes, and ``recall_result`` resolves it under the caller's
+    session; reusing another session's id made the id point at content the
+    caller could only reach through the cross-session fallback path. Identical
+    content in two sessions therefore gets one row per session — cheap
+    (SQLite stores each row once) and honest.
     """
     now = time.time() if created_at is None else created_at
 
     with conn:
-        cur = conn.execute("SELECT id FROM results WHERE hash = ? LIMIT 1", (content_hash,))
+        cur = conn.execute(
+            "SELECT id FROM results WHERE hash = ? AND session_id = ? LIMIT 1",
+            (content_hash, session_id),
+        )
         row = cur.fetchone()
         if row:
             return row[0]
@@ -177,26 +213,113 @@ def upsert_seen(
     generation: int,
     served_gen: int,
     streak: int,
+    updated_at: Optional[float] = None,
 ) -> None:
     """Record or update tracking state for a key within a session."""
+    now = time.time() if updated_at is None else updated_at
     with conn:
         conn.execute(
             """
-            INSERT INTO seen (session_id, key, hash, generation, served_gen, streak)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO seen (session_id, key, hash, generation, served_gen, streak, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, key) DO UPDATE SET
                 hash = excluded.hash,
                 generation = excluded.generation,
                 served_gen = excluded.served_gen,
-                streak = excluded.streak
+                streak = excluded.streak,
+                updated_at = excluded.updated_at
             """,
-            (session_id, key, content_hash, generation, served_gen, streak),
+            (session_id, key, content_hash, generation, served_gen, streak, now),
         )
 
 
+def bump_stat(
+    conn: sqlite3.Connection,
+    key: str,
+    amount: float = 1.0,
+    absolute: bool = False,
+) -> float:
+    """Increment (or set, with ``absolute``) a persisted counter. Returns the value.
+
+    Best-effort by contract: callers are on the tool-result path and must never
+    fail a turn because a counter write failed.
+    """
+    now = time.time()
+    try:
+        with conn:
+            if absolute:
+                conn.execute(
+                    "INSERT INTO stats (key, value, updated_at) VALUES (?, ?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value = excluded.value,"
+                    " updated_at = excluded.updated_at",
+                    (key, float(amount), now),
+                )
+                return float(amount)
+            conn.execute(
+                "INSERT INTO stats (key, value, updated_at) VALUES (?, ?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = value + excluded.value,"
+                " updated_at = excluded.updated_at",
+                (key, float(amount), now),
+            )
+            row = conn.execute("SELECT value FROM stats WHERE key = ?", (key,)).fetchone()
+            return float(row[0]) if row else 0.0
+    except sqlite3.Error as err:
+        logger.debug("stats bump failed (%s): %s", key, err)
+        return 0.0
+
+
+def get_stats(conn: sqlite3.Connection) -> dict:
+    """Return the persisted activity counters plus live row counts.
+
+    ``stubs == 0`` with ``loads > 0`` is the diagnostic for "loaded but nothing
+    qualified" (all results under the size floor, or every tool on the ignore
+    list). ``loads == 0`` means the plugin never registered at all.
+    """
+    out: dict = {
+        "loads": 0.0,
+        "hook_calls": 0.0,
+        "passes": 0.0,
+        "stubs": 0.0,
+        "last_stub_at": 0.0,
+        "last_load_at": 0.0,
+        "gc_runs": 0.0,
+        "gc_removed": 0.0,
+    }
+    try:
+        for key, value in conn.execute("SELECT key, value FROM stats"):
+            out[key] = value
+        out["results"] = conn.execute("SELECT count(*) FROM results").fetchone()[0]
+        out["seen"] = conn.execute("SELECT count(*) FROM seen").fetchone()[0]
+    except sqlite3.Error as err:
+        logger.debug("stats read failed: %s", err)
+        out.setdefault("results", 0)
+        out.setdefault("seen", 0)
+    return out
+
+
 def gc(conn: sqlite3.Connection, ttl_hours: float = 24.0) -> int:
-    """Evict results older than ttl_hours. Returns count of removed items."""
+    """Evict stale results AND stale per-session tracking state.
+
+    Returns the number of rows removed (results + seen).
+
+    Both halves matter: `results` holds the bytes behind every stub (unbounded
+    growth if never pruned), while `seen` holds one row per (session, tool+args)
+    forever — including sessions that ended days ago. Pruning only `results`
+    leaves a permanent index of dead sessions.
+    """
     cutoff = time.time() - (ttl_hours * 3600.0)
-    with conn:
-        cur = conn.execute("DELETE FROM results WHERE created_at < ?", (cutoff,))
-        return cur.rowcount
+    removed = 0
+    try:
+        with conn:
+            cur = conn.execute("DELETE FROM results WHERE created_at < ?", (cutoff,))
+            removed += max(0, cur.rowcount)
+            cur = conn.execute("DELETE FROM seen WHERE updated_at < ?", (cutoff,))
+            removed += max(0, cur.rowcount)
+        # Counters are written AFTER the delete transaction commits: bump_stat
+        # opens its own `with conn` block, and nesting them would commit twice.
+        bump_stat(conn, "gc_runs", 1)
+        if removed:
+            bump_stat(conn, "gc_removed", removed)
+    except sqlite3.Error as err:
+        logger.debug("gc failed: %s", err)
+    return removed

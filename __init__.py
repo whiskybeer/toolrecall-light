@@ -7,7 +7,9 @@ context and registers recall_result to restore the full content on demand.
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import time
 import uuid
 from typing import Any, Optional
 
@@ -20,6 +22,22 @@ logger = logging.getLogger(__name__)
 
 _session_generations: dict[str, int] = {}
 _lock = threading.Lock()
+
+# Session identity when the host supplies neither session_id nor task_id. The old
+# literal "default" made every id-less session share one `seen` row, so session B
+# could receive a stub for content only session A had read — a stub pointing at
+# bytes the agent never saw. Process-scoped identity keeps id-less calls isolated
+# and stays stable for the life of the process.
+_PROCESS_SESSION_ID = f"process-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+_first_stub_logged = False
+
+# Opportunistic store hygiene. `results` holds the bytes behind every stub, so
+# without a sweep the DB grows for the life of the install; at most one sweep per
+# interval, on the stub path only.
+_last_gc: float = 0.0
+_GC_INTERVAL_S = 6 * 3600.0
+_GC_TTL_HOURS = 24.0
 
 
 def get_session_generation(session_id: str) -> int:
@@ -34,6 +52,26 @@ def advance_session_generation(session_id: str) -> int:
         gen = _session_generations.get(session_id, 0) + 1
         _session_generations[session_id] = gen
         return gen
+
+
+def _active_session(session_id: Optional[str], task_id: Optional[str]) -> str:
+    """Resolve the session key used for stub scoping (never the literal "default")."""
+    return session_id or task_id or _PROCESS_SESSION_ID
+
+
+def _maybe_gc(conn: Any) -> None:
+    """Run the store sweep at most once per interval. Never raises."""
+    global _last_gc
+    now = time.time()
+    if now - _last_gc < _GC_INTERVAL_S:
+        return
+    _last_gc = now
+    try:
+        removed = store.gc(conn, ttl_hours=_GC_TTL_HOURS)
+        if removed:
+            logger.info("toolrecall-light: store sweep removed %d stale row(s)", removed)
+    except Exception as err:  # noqa: BLE001 — hygiene must never break a turn
+        logger.debug("store sweep failed: %s", err)
 
 
 def _on_transform_tool_result(
@@ -54,8 +92,9 @@ def _on_transform_tool_result(
         if not dedup.should_dedup(tool_name, args, result, status=status, error_type=error_type):
             return None
 
-        active_session = session_id or task_id or "default"
+        active_session = _active_session(session_id, task_id)
         conn = store.get_default_connection()
+        store.bump_stat(conn, "hook_calls")
         current_gen = get_session_generation(active_session)
 
         content_hash = dedup.result_hash(result)
@@ -75,6 +114,7 @@ def _on_transform_tool_result(
                 served_gen=current_gen,
                 streak=0,
             )
+            store.bump_stat(conn, "passes")
             return None
 
         # Key already seen with identical content
@@ -91,6 +131,7 @@ def _on_transform_tool_result(
                 served_gen=current_gen,
                 streak=0,
             )
+            store.bump_stat(conn, "passes")
             return None
 
         # Streak guard: pass through full content every (MAX_STUB_STREAK + 1) calls
@@ -104,6 +145,7 @@ def _on_transform_tool_result(
                 served_gen=current_gen,
                 streak=0,
             )
+            store.bump_stat(conn, "passes")
             return None
 
         # Qualifies for stubbing: retrieve/persist canonical ID and return compact stub
@@ -120,6 +162,17 @@ def _on_transform_tool_result(
         )
 
         nbytes = len(result.encode("utf-8"))
+        store.bump_stat(conn, "stubs")
+        store.bump_stat(conn, "last_stub_at", time.time(), absolute=True)
+        global _first_stub_logged
+        if not _first_stub_logged:
+            _first_stub_logged = True
+            logger.info(
+                "toolrecall-light: first stub (%s, %d bytes) — dedup is active",
+                tool_name,
+                nbytes,
+            )
+        _maybe_gc(conn)
         return dedup.format_stub(tool_name, res_id, nbytes)
 
     except Exception as err:
@@ -139,6 +192,22 @@ def _on_post_compaction(session_id: Optional[str] = None, **kwargs: Any) -> None
         logger.debug("post_compaction hook error: %s", err)
 
 
+def status() -> dict:
+    """Return this plugin's activity counters — the answer to "is it firing?".
+
+    Never raises: an ``{"error": ...}`` payload is itself the diagnosis (loaded
+    but cannot persist). Interpretation:
+      loads == 0        -> never registered with the host
+      hook_calls == 0   -> registered, but the host never invoked the hook
+      stubs == 0        -> invoked, nothing qualified (size floor / ignore list)
+    """
+    try:
+        conn = store.get_default_connection()
+        return store.get_stats(conn)
+    except Exception as err:  # noqa: BLE001 — a status call must not raise
+        return {"error": str(err)}
+
+
 def register(ctx: Any) -> None:
     """Register hooks and tools with the Hermes PluginContext."""
     ctx.register_hook("transform_tool_result", _on_transform_tool_result)
@@ -150,3 +219,17 @@ def register(ctx: Any) -> None:
         handler=schemas.handle_recall,
         description=schemas.RECALL_RESULT["description"],
     )
+    # One INFO line makes "did it load?" answerable from the host log; the
+    # persisted counter makes it survive log rotation.
+    try:
+        conn = store.get_default_connection()
+        store.bump_stat(conn, "loads")
+        store.bump_stat(conn, "last_load_at", time.time(), absolute=True)
+        logger.info(
+            "toolrecall-light loaded (min_chars=%d, ignore=%s, max_stub_streak=%d)",
+            dedup.get_min_chars(),
+            ",".join(sorted(dedup.DEFAULT_IGNORE_TOOLS)),
+            dedup.get_max_stub_streak(),
+        )
+    except Exception as err:  # noqa: BLE001 — registration must not fail on stats
+        logger.warning("toolrecall-light loaded, but activity counters unavailable: %s", err)

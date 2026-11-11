@@ -1,12 +1,33 @@
 # ToolRecall Light (`toolrecall-light`)
 
-> **Deterministic context deduplication and on-demand tool recall for [Hermes Agent](https://github.com/NousResearch/hermes-agent).**  
-> *Looking for host-wide multi-agent pooling, MCP multiplexing, or forward proxy stream replay? See [ToolRecall Core](https://toolrecall.dev).*
+**Your agent pays for the same tool output on every turn after the first. This plugin stops that — and keeps the bytes recallable.**
 
-Replaces byte-identical repeated tool outputs (`terminal`, `search_files`, MCP servers, connectors, third-party toolsets) with a compact stub **before they enter model context**, and exposes an explicit `recall_result(result_id)` tool so the model can restore the full original bytes on demand.
+A plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent). When a tool result repeats
+— the same `pytest` run, the same `search_files` scan, the same MCP call — the model receives a
+one-line stub instead of the full payload. The original is kept in a local SQLite file and comes back
+byte-for-byte through `recall_result(result_id)` whenever the model actually needs it.
 
-[![ToolRecall Light Walkthrough Video](assets/thumbnail.png)](assets/demo.mp4)
-> 🎥 **[Watch the Narrated Walkthrough Video (`assets/demo.mp4`, 1080p with English Voiceover)](assets/demo.mp4)** — or run `python3 demo.py` locally in your terminal.
+Why it matters: a 40 KB traceback emitted on turn 3 is still in the transcript on turn 9, and is
+re-sent with it. Long sessions pay for the same output ten, twenty times.
+
+[![ToolRecall Light walkthrough video](assets/thumbnail.png)](assets/demo.mp4)
+
+```
+[toolrecall-light] identical to earlier terminal result 50f59afa067a (2317 bytes) in this session.
+Call recall_result(result_id="50f59afa067a") if you need the full content.
+```
+
+**Measured across turns** — 4-turn session, 40 KB result repeated each turn, real billed ledger:
+**−23.2 % / −29.6 % total prompt tokens**, **−24 % / −30 % cost**. It is **not** a within-turn win:
+core already dedups repeats inside a turn and does it more cheaply. The breakdown, including where
+this plugin loses, is in [Evidence, by provenance](#evidence-by-provenance).
+
+```bash
+hermes plugins install https://github.com/whiskybeer/toolrecall-light
+```
+
+Zero dependencies, stdlib only, fail-open. *Looking for host-wide multi-agent pooling, MCP multiplexing,
+or forward proxy stream replay? See [ToolRecall Core](https://toolrecall.dev).*
 
 ---
 

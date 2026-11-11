@@ -7,12 +7,27 @@ Supports WAL mode, thread-safety, LRU/TTL garbage collection, and hash-sharing.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import time
 from pathlib import Path
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+_warned_fallback = False
+
+
+def _fallback_db_path() -> Path:
+    """Last-resort store location when Hermes' storage API is unavailable.
+
+    Honors ``HERMES_HOME`` — the profile-safe root Hermes itself resolves paths
+    from. Hardcoding ``~/.hermes`` here would put the store outside a custom
+    home or profile tree, where a later read would never find it again.
+    """
+    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    return Path(home) / "plugin-data" / "toolrecall-light" / "data.db"
+
 
 CREATE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS results (
@@ -52,9 +67,19 @@ def get_default_connection(db_path: Optional[Path | str] = None) -> sqlite3.Conn
                 target = plugin_data_dir("toolrecall-light") / "data.db"
                 conn = sqlite3.connect(str(target), check_same_thread=False)
             except Exception:
-                # Fallback to local default under user home or temp directory
+                # Fallback to the Hermes home when the sanctioned storage API is
+                # unavailable. Warn once: silently diverging to a different home
+                # is invisible under a profile or custom HERMES_HOME.
+                global _warned_fallback
+                if not _warned_fallback:
+                    _warned_fallback = True
+                    logger.warning(
+                        "plugins.plugin_storage unavailable; toolrecall-light is "
+                        "storing results outside Hermes' storage API at %s",
+                        _fallback_db_path(),
+                    )
                 try:
-                    target = Path.home() / ".hermes" / "plugin-data" / "toolrecall-light" / "data.db"
+                    target = _fallback_db_path()
                     target.parent.mkdir(parents=True, exist_ok=True)
                     conn = sqlite3.connect(str(target), check_same_thread=False)
                 except OSError:

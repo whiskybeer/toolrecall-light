@@ -2,6 +2,7 @@ import sqlite3
 import time
 import pytest
 from store import (
+    _fallback_db_path,
     gc,
     get_result,
     get_seen,
@@ -66,3 +67,16 @@ def test_gc_ttl(memory_db):
 
     assert get_result(memory_db, "old-id") is None
     assert get_result(memory_db, "new-id") == "new"
+
+
+def test_fallback_path_honors_hermes_home(monkeypatch, tmp_path):
+    """A profile or custom HERMES_HOME must get its store inside that tree."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert _fallback_db_path() == tmp_path / "plugin-data" / "toolrecall-light" / "data.db"
+
+
+def test_fallback_path_defaults_to_dot_hermes(monkeypatch, tmp_path):
+    """Without HERMES_HOME the documented default is ~/.hermes."""
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert _fallback_db_path() == tmp_path / ".hermes" / "plugin-data" / "toolrecall-light" / "data.db"

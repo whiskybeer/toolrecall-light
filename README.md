@@ -10,7 +10,9 @@ byte-for-byte through `recall_result(result_id)` whenever the model actually nee
 Why it matters: a 40 KB traceback emitted on turn 3 is still in the transcript on turn 9, and is
 re-sent with it. Long sessions pay for the same output ten, twenty times.
 
-[![ToolRecall Light walkthrough video](assets/thumbnail.png)](assets/demo.mp4)
+[![33-second demo: repeated tool output becomes a one-line stub](assets/hero-30s.png)](assets/marketing_30s.mp4)
+
+*33-second overview. The longer technical walkthrough (100 s, narrated, shows the store and `recall_result`): [assets/demo.mp4](assets/demo.mp4).*
 
 ```
 [toolrecall-light] identical to earlier terminal result 50f59afa067a (2317 bytes) in this session.
@@ -250,6 +252,10 @@ hermes plugins validate .
 ---
 
 ## Benchmark Receipt (20-turn SWE Trajectory)
+
+*Modelled, not measured:* this is the synthetic 20-turn scenario from `bench/run_benchmark.py` — small
+fixed context (~1 k tokens/turn), tokens estimated as `chars / 4`, $3.00/M assumed. It describes that
+workload only; the measured numbers are the cross-turn A/B in [Evidence](#evidence-by-provenance).
 
 | Metric | Baseline (Vanilla) | Treatment (With toolrecall-light) | Impact |
 |---|---|---|---|

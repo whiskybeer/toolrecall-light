@@ -57,6 +57,28 @@ If the agent needs the full traceback or compiler lines, it invokes `recall_resu
 
 ---
 
+## Run one, not both (co-installation with ToolRecall core)
+
+ToolRecall core (daemon + forward proxy + MCP bridge) and this plugin both rewrite tool results
+before the model sees them, at different layers. They do not crash each other, but they overlap:
+
+- core sends full content for a bridge/shim file read;
+- this plugin replaces that content with its own stub;
+- core then records a full send the model never received, so its `mcp_dedup` counters overstate
+  what actually reached the model.
+
+**Install one.** If core is running, you do not need this plugin — core already dedups file reads
+and its proxy is the only layer that reduces billed tokens for the *current* turn. Keep core:
+`hermes plugins disable toolrecall-light`. Keep this plugin: `toolrecall stop` and remove its
+proxy/MCP wiring.
+
+Detection is built in on both sides:
+
+- this plugin checks at `register()` and logs one warning naming what it found (proxy `:8569`,
+  MCP bridge, active shim, importable package); the same result is available as
+  `status()["core_conflict"]`;
+- core reports an enabled/installed plugin in `toolrecall healthcheck`.
+
 ## Hardened Safety & Non-Goals
 
 1. **Loop Breaker (Streak Guard):** Forces full content pass-through after 5 consecutive stubs for the same key (configurable via `HERMES_TOOLRECALL_LIGHT_MAX_STUB_STREAK`) to prevent stuck model evaluation loops while preserving 95.4% deduplication efficiency.

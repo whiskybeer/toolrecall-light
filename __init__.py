@@ -14,9 +14,9 @@ import uuid
 from typing import Any, Optional
 
 try:
-    from . import dedup, schemas, store
+    from . import compat, dedup, schemas, store
 except (ImportError, ValueError):
-    import dedup, schemas, store
+    import compat, dedup, schemas, store
 
 logger = logging.getLogger(__name__)
 
@@ -203,9 +203,13 @@ def status() -> dict:
     """
     try:
         conn = store.get_default_connection()
-        return store.get_stats(conn)
+        stats = store.get_stats(conn)
     except Exception as err:  # noqa: BLE001 — a status call must not raise
         return {"error": str(err)}
+    # Co-installation is a status fact, not an error: answer "is core also here?"
+    # in the same call that answers "is this plugin firing?".
+    stats["core_conflict"] = compat.detect()
+    return stats
 
 
 def register(ctx: Any) -> None:
@@ -233,3 +237,9 @@ def register(ctx: Any) -> None:
         )
     except Exception as err:  # noqa: BLE001 — registration must not fail on stats
         logger.warning("toolrecall-light loaded, but activity counters unavailable: %s", err)
+    # Co-install check: one actionable line instead of a silent double-dedup.
+    # Read-only and fail-open — it never blocks loading.
+    try:
+        compat.warn_if_core_present()
+    except Exception as err:  # noqa: BLE001 — a warning must never break loading
+        logger.debug("core-conflict check skipped: %s", err)

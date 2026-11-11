@@ -86,3 +86,26 @@ In multi-turn agent sessions, prompt context compounds on every turn. A duplicat
 1. **Loop Breaker (Streak Guard):** Forces full content pass-through after 5 consecutive identical stubs (configurable via `HERMES_TOOL_RECALL_MAX_STUB_STREAK`), preventing agent reasoning loops while preserving 95.4% deduplication efficiency.
 2. **Compaction Awareness (`post_compaction`):** Turn 11 triggered history compaction; Turn 12 served full content once in the new generation before resume-stubbing.
 3. **On-Demand Precision Recall:** Turn 14 invoked `recall_result(result_id=...)`, restoring 100% byte-for-byte fidelity in **sub-millisecond time**.
+
+## 6. Measured — cross-turn dedup (live session, billed ledger)
+
+Four-turn session, the same `cat` of a 39,680-byte file once per turn, `deepseek-v4.1-flash-1017`,
+per-run `--usage-file` from the provider. Core's own guardrail resets each turn, so it cannot help here;
+the plugin keys on `(tool, args)` per session.
+
+| Arm | turn 1 | turn 2 | turn 3 | turn 4 | total prompt | cost USD |
+|---|---|---|---|---|---|---|
+| plugin on | 33,943 | 116,198 | 199,058 | 282,752 | **631,951** | 0.002367 |
+| plugin off | 54,889 | 145,098 | 269,478 | 428,439 | 897,904 | 0.003080 |
+| plugin on (seed 2) | 45,218 | 127,485 | 210,343 | 294,027 | **677,073** | 0.002337 |
+| plugin off (seed 2) | 55,747 | 137,969 | 263,779 | 423,882 | 881,377 | 0.003671 |
+
+- Total prompt tokens: **−29.6 %** (seed 1), **−23.2 %** (seed 2).
+- Final turn, where compounding is largest: **−34.0 %** / **−30.6 %**.
+- Cost: **−23.2 %** / **−36.3 %**.
+- Turn 1 differs between arms by 10–21 k tokens for an unattributed reason (same prompt, one call);
+  the from-turn-2 comparison is the stable one: −29.1 % / −23.5 %.
+
+**Intra-turn is the opposite.** Six identical 40,363-byte calls in one turn: 306,130 prompt tokens with
+the plugin vs 254,662 without (8 vs 7 API calls). Core's guardrail (`IDENTICAL_RESULT_STUB_MIN_CHARS = 512`,
+from the 2nd repeat, `reset_for_turn()`) already covers that case more cheaply.

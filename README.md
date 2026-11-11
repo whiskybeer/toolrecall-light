@@ -12,13 +12,31 @@ Replaces byte-identical repeated tool outputs (`terminal`, `search_files`, MCP s
 
 ## Why ToolRecall Light?
 
-Hermes core already deduplicates file reads and skill views (`tools/file_tools.py` and `tools/skills_tool_dedup.py`). However, core **does not deduplicate any other tool**:
-- Repetitive test runs (`terminal` running `pytest`, `cargo test`, `npm test`)
-- Repetitive build commands, compiler tracebacks, git status queries
-- Repetitive codebase scans (`search_files`)
-- MCP servers, web extracts, and connector responses
+Since Hermes v0.23.x, core already deduplicates byte-identical tool results **within a single turn**:
+`agent/tool_guardrails.py` replaces a repeat from the 2nd occurrence (`IDENTICAL_RESULT_STUB_MIN_CHARS = 512`)
+and calls `reset_for_turn()` at every turn boundary. Measured on v0.23.1, 6 identical 40 KB `terminal`
+calls in one turn: with the plugin 306 k prompt tokens, without it 255 k — **core alone is better**, because
+its stub is cheaper and the plugin occasionally provokes an extra call.
 
-In real multi-turn agent sessions, these un-deduplicated tools compound on every subsequent turn. A 10 KB duplicate emitted on Turn 4 is re-sent on Turns 5, 6, 7 ... 20, wasting hundreds of thousands of prompt tokens and exhausting context windows.
+What core does **not** do is carry that across turns. That is the gap this plugin fills:
+
+- a 40 KB result emitted on turn 1 is re-sent in full on turns 2, 3, 4 … because the per-turn state was reset;
+- this plugin keys on `(tool, args)` per **session**, so later turns receive the stub.
+
+Measured, 4-turn session, the same 40 KB command once per turn (2 seeds):
+
+| Arm | turn 1 | turn 2 | turn 3 | turn 4 | total prompt | cost |
+|---|---|---|---|---|---|---|
+| plugin on | 33,943 | 116,198 | 199,058 | 282,752 | **631,951** | $0.002367 |
+| plugin off | 54,889 | 145,098 | 269,478 | 428,439 | 897,904 | $0.003080 |
+| plugin on (seed 2) | 45,218 | 127,485 | 210,343 | 294,027 | **677,073** | $0.002337 |
+| plugin off (seed 2) | 55,747 | 137,969 | 263,779 | 423,882 | 881,377 | $0.003671 |
+
+* **23.2 %** and **29.6 %** fewer total prompt tokens; **−30.6 % / −34.0 %** on the final turn, where
+  compounding is largest; cost **−24 % / −30 %** (provider ledger, `--usage-file`).
+* Turn-1 baselines differ between arms by 10–21 k tokens for a reason we could not attribute (same prompt,
+  one call each). The per-turn comparison from turn 2 onward is the stable part: −23.5 % / −29.1 %.
+
 
 `toolrecall-light` intercepts these repeats before they enter context, saves them to local SQLite, and serves a 1-line stub. If the model ever needs the exact original lines back, it uses the tool to recall tools: `recall_result`.
 
@@ -54,16 +72,21 @@ Deterministic and reproducible, **but not a session measurement**: the transcrip
 * Valid **only** for the regime it models: a small fixed context (~1 k tokens/turn) with duplicates
   that dominate it. It does not transfer to sessions with a ~12 k-token system prompt.
 
-### 4. Measured — live session, real billed ledger (`--usage-file`)
+### 4. Measured — live sessions, real billed ledger (`--usage-file`)
 
-One real Hermes session, 6 identical `terminal` calls, 7,014-char results each, plugin on vs off
-(3 runs per arm, `deepseek-v4.1-flash-1017`, provider usage ledgers):
+**4a. Within one turn (where core already dedups).** 6 identical `terminal` calls, 7,014-char
+results (3 runs/arm) and 40,363-char results (2 runs/arm), `deepseek-v4.1-flash-1017`:
 
-* total prompt tokens **101,313** (plugin) vs **101,845–101,968** (no plugin) at matched call count
-  — a **~0.5 % difference, inside run-to-run noise**;
-* 2 of 3 plugin runs made an extra API call, so the plugin arm was marginally **more** expensive.
+* 7 KB: total prompt **101,313** (plugin) vs **101,845–101,968** (none) — ~0.5 %, inside noise.
+* 40 KB: **306,130** (plugin, 8 calls) vs **254,662** (none, 7 calls) — the plugin is **~20 % worse**.
+  Core's own stub (512-char floor, replaces from the 2nd repeat) already covers this case more cheaply,
+  and the plugin occasionally provokes an extra call.
 
-At this scale the stub does not pay for itself. A larger-duplicate workload is the open test.
+**4b. Across turns (where core resets).** 4-turn session, the same 40 KB command once per turn:
+**631,951 vs 897,904** and **677,073 vs 881,377** prompt tokens (−29.6 % / −23.2 %), cost
+$0.0024 vs $0.0031–0.0037. See the table above; turn-1 baseline drift is called out there.
+
+**Net:** the plugin's measured value is cross-turn duplicate suppression, not intra-turn.
 
 ### 5. Microbenchmark — recall latency
 

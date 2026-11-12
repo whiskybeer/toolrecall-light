@@ -189,6 +189,49 @@ The un-normalized, exact raw bytes are always preserved in local storage for `re
 
 ---
 
+## Architecture & Execution Flow
+
+`toolrecall-light` hooks into Hermes Agent via the official `transform_tool_result` event, routing tool outputs through a multi-stage filtering, normalization, and deduplication pipeline:
+
+```text
+                     Hermes Tool Execution Result
+                                  │
+                                  ▼
+                Hook: _on_transform_tool_result()
+                                  │
+                  [Eligible Tool & Result Size?]
+               (>= 2,000 chars, <= 2,000,000 chars)
+                                  │
+                 ├── No ──────────┴────────────────────────┐
+                 │                                         │
+                 ▼                                         ▼
+      Volatile Normalization                     Pass Full Content
+   (Strip ANSI, timings, JSON sort)              Through to Context
+                 │
+                 ▼
+          Canonical SHA-256
+                 │
+                 ▼
+       Query Local SQLite Store
+                 │
+      ┌──────────┴─────────────────────────┐
+      ▼                                    ▼
+Exact Match Found?                  Hash Mismatch
+(Same tool & normalized content)    (Prior result exists for tool?)
+      │                                    │
+      ▼                                    ▼
+Streak >= 5?                       Compute Unified Diff
+(Loop Breaker)                    (difflib.unified_diff)
+  ├── Yes ──► Pass Full Send               │
+  │           (Reset streak)       Diff < 4KB & < 50% size?
+  └── No  ──► Emit Exact Stub        ├── Yes ──► Emit Diff Stub
+              (Record stub)          └── No  ──► Store & Pass Full
+```
+
+For full internal design details, schema definitions, and module boundaries, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+---
+
 ## Run one, not both (co-installation with ToolRecall core)
 
 ToolRecall core (daemon + forward proxy + MCP bridge) and this plugin both rewrite tool results
@@ -280,7 +323,7 @@ most every 6 h on the stub path (`gc_ttl_hours = 24`), pruning expired results
 ## Validation & Testing
 
 ```bash
-# Run test suite (29/29 unit & integration tests)
+# Run test suite (51/51 unit & integration tests)
 pytest tests/ -v
 
 # Run official Hermes plugin admission check

@@ -167,6 +167,141 @@ def test_sliced_recall_lines_and_grep(isolated_plugin):
     assert "L5: line 5: ERROR: retry failed" in resp_grep["content"]
 
 
+def test_slice_edge_cases(isolated_plugin):
+    """Test slice_content edge cases: invalid regex, out-of-bounds, single line."""
+    session_id = "sess-slice-edge"
+    content = "alpha\nbeta\ngamma\ndelta\nepsilon"
+    result_id = "res-slice-edge"
+    store.put_result(isolated_plugin, result_id, dedup.result_hash(content), content, session_id)
+
+    # 1. Invalid regex should fall back safely to substring match
+    resp_bad_regex = json.loads(schemas.handle_recall(
+        {"result_id": result_id, "grep": "([invalid+"},
+        conn=isolated_plugin,
+        session_id=session_id,
+    ))
+    assert resp_bad_regex["sliced"] is True
+    assert resp_bad_regex["returned_lines"] == 0
+
+    # 2. Valid regex fallback substring match
+    content2 = "alpha\nbeta ([invalid+ test\ngamma"
+    store.put_result(isolated_plugin, "res-2", dedup.result_hash(content2), content2, session_id)
+    resp_sub = json.loads(schemas.handle_recall(
+        {"result_id": "res-2", "grep": "([invalid+"},
+        conn=isolated_plugin,
+        session_id=session_id,
+    ))
+    assert resp_sub["sliced"] is True
+    assert "L2: beta ([invalid+ test" in resp_sub["content"]
+
+    # 3. Line range out of bounds
+    resp_oob = json.loads(schemas.handle_recall(
+        {"result_id": result_id, "lines": "100-200"},
+        conn=isolated_plugin,
+        session_id=session_id,
+    ))
+    assert resp_oob["sliced"] is True
+    assert resp_oob["returned_lines"] == 0
+    assert resp_oob["content"] == ""
+
+    # 4. Single line selection ("3")
+    resp_single = json.loads(schemas.handle_recall(
+        {"result_id": result_id, "lines": "3"},
+        conn=isolated_plugin,
+        session_id=session_id,
+    ))
+    assert resp_single["sliced"] is True
+    assert resp_single["content"] == "gamma"
+
+
+def test_diff_fallback_to_full_pass_when_diff_is_too_large(isolated_plugin):
+    """When a modification is so large that a diff saves nothing, pass full content."""
+    session_id = "sess-diff-fallback"
+    tool_name = "terminal"
+    args = {"command": "cargo build"}
+
+    out1 = "Compiling pkg v1.0.0\n" + ("build line output\n" * 150)
+    out2 = "Entirely completely different failure cascade\n" + ("panic error dump\n" * 150)
+
+    # Call 1: pass through
+    assert plugin._on_transform_tool_result(tool_name, args, out1, session_id=session_id) is None
+
+    # Call 2: completely changed output -> diff is not beneficial -> full pass through
+    res2 = plugin._on_transform_tool_result(tool_name, args, out2, session_id=session_id)
+    assert res2 is None  # Pass through!
+
+    # Call 3: identical to Call 2 -> should now stub!
+    res3 = plugin._on_transform_tool_result(tool_name, args, out2, session_id=session_id)
+    assert res3 is not None
+    assert "[toolrecall-light]" in res3
+    assert "identical to the earlier" in res3
+
+
+def test_streak_guard_with_diff_stubs(isolated_plugin, monkeypatch):
+    """Streak guard forces a full send after MAX_STREAK consecutive suppressions."""
+    monkeypatch.setenv("HERMES_TOOLRECALL_LIGHT_MAX_STUB_STREAK", "2")
+    session_id = "sess-diff-streak"
+    tool_name = "terminal"
+    args = {"command": "pytest"}
+
+    # 150 lines of ~30 chars each = ~4500 chars (> DEFAULT_MIN_CHARS 2000)
+    lines = [f"test line {i:03d}: status ok and execution normal" for i in range(150)]
+    out1 = "\n".join(lines)
+    # small mod
+    lines[10] = "test line 010: STATUS FAILED WITH ASSERTION ERROR"
+    out2 = "\n".join(lines)
+
+    # Turn 1: initial pass-through
+    assert plugin._on_transform_tool_result(tool_name, args, out1, session_id=session_id) is None
+
+    # Turn 2: diff stub (streak=1)
+    res2 = plugin._on_transform_tool_result(tool_name, args, out2, session_id=session_id)
+    assert res2 is not None
+    assert "modified output" in res2
+
+    # Turn 3: identical repeat of out2 (streak=2)
+    res3 = plugin._on_transform_tool_result(tool_name, args, out2, session_id=session_id)
+    assert res3 is not None
+    assert "identical to the earlier" in res3
+
+    # Turn 4: streak limit reached (streak=2 >= MAX_STREAK=2) -> must pass through full content!
+    res4 = plugin._on_transform_tool_result(tool_name, args, out2, session_id=session_id)
+    assert res4 is None  # Pass through!
+
+
+def test_compaction_reset_with_diff_stubs(isolated_plugin):
+    """Compaction reset forces full re-send before resuming diff/stubs in new generation."""
+    session_id = "sess-compaction-diff"
+    tool_name = "terminal"
+    args = {"command": "make"}
+
+    # 150 lines of ~30 chars each = ~4500 chars (> DEFAULT_MIN_CHARS 2000)
+    lines = [f"make step {i:03d}: compile unit and verify target" for i in range(150)]
+    out1 = "\n".join(lines)
+    lines[5] = "make step 005: COMPILE ERROR IN SYMBOL RESOLUTION"
+    out2 = "\n".join(lines)
+
+    # Turn 1: pass through
+    assert plugin._on_transform_tool_result(tool_name, args, out1, session_id=session_id) is None
+
+    # Turn 2: diff stub
+    res2 = plugin._on_transform_tool_result(tool_name, args, out2, session_id=session_id)
+    assert res2 is not None
+    assert "modified output" in res2
+
+    # Compaction occurs!
+    plugin._on_post_compaction(session_id=session_id)
+
+    # Turn 3: generation changed -> must re-anchor with full content once!
+    res3 = plugin._on_transform_tool_result(tool_name, args, out2, session_id=session_id)
+    assert res3 is None  # Full send anchor!
+
+    # Turn 4: now in the new generation -> stubbing resumes
+    res4 = plugin._on_transform_tool_result(tool_name, args, out2, session_id=session_id)
+    assert res4 is not None
+    assert "identical" in res4
+
+
 def test_coexistence_state_reporting(isolated_plugin):
     """status() should report coexistence info."""
     st = plugin.status()

@@ -107,14 +107,20 @@ def _on_transform_tool_result(
         store.bump_stat(conn, "hook_calls")
         current_gen = get_session_generation(active_session)
 
-        content_hash = dedup.result_hash(result)
-        key = dedup.make_key(tool_name, args)
-        seen = store.get_seen(conn, active_session, key)
+        raw_hash = dedup.result_hash(result)
+        if dedup.is_normalization_enabled():
+            normalized = dedup.normalize_output(result)
+            content_hash = dedup.result_hash(normalized)
+        else:
+            content_hash = raw_hash
 
-        if seen is None or seen[0] != content_hash:
-            # First time seeing this (or output changed) -> store and pass through
+        key = dedup.make_key(tool_name, args)
+        seen_entry = store.get_seen_entry(conn, active_session, key)
+
+        if seen_entry is None:
+            # First time seeing this -> store raw bytes and pass through
             new_id = uuid.uuid4().hex[:12]
-            store.put_result(conn, new_id, content_hash, result, active_session)
+            store.put_result(conn, new_id, raw_hash, result, active_session)
             store.upsert_seen(
                 conn,
                 active_session,
@@ -123,15 +129,17 @@ def _on_transform_tool_result(
                 generation=current_gen,
                 served_gen=current_gen,
                 streak=0,
+                last_id=new_id,
             )
             store.bump_stat(conn, "passes")
             return None
 
-        # Key already seen with identical content
-        _stored_hash, _stored_gen, served_gen, streak = seen
+        stored_hash, stored_gen, served_gen, streak, last_id = seen_entry
 
         # Post-compaction generation reset: serve full content once in the new generation
         if served_gen != current_gen:
+            new_id = uuid.uuid4().hex[:12]
+            store.put_result(conn, new_id, raw_hash, result, active_session)
             store.upsert_seen(
                 conn,
                 active_session,
@@ -140,12 +148,15 @@ def _on_transform_tool_result(
                 generation=current_gen,
                 served_gen=current_gen,
                 streak=0,
+                last_id=new_id,
             )
             store.bump_stat(conn, "passes")
             return None
 
         # Streak guard: pass through full content every (MAX_STUB_STREAK + 1) calls
         if streak >= dedup.get_max_stub_streak():
+            new_id = uuid.uuid4().hex[:12]
+            store.put_result(conn, new_id, raw_hash, result, active_session)
             store.upsert_seen(
                 conn,
                 active_session,
@@ -154,36 +165,85 @@ def _on_transform_tool_result(
                 generation=current_gen,
                 served_gen=current_gen,
                 streak=0,
+                last_id=new_id,
             )
             store.bump_stat(conn, "passes")
             return None
 
-        # Qualifies for stubbing: retrieve/persist canonical ID and return compact stub
+        # Check if content matches (identical or normalized match)
+        if stored_hash == content_hash:
+            # Qualifies for identical stub: retrieve/persist canonical ID and return compact stub
+            new_id = uuid.uuid4().hex[:12]
+            res_id = store.put_result(conn, new_id, raw_hash, result, active_session)
+            store.upsert_seen(
+                conn,
+                active_session,
+                key,
+                content_hash,
+                generation=current_gen,
+                served_gen=served_gen,
+                streak=streak + 1,
+                last_id=res_id,
+            )
+
+            nbytes = len(result.encode("utf-8"))
+            store.bump_stat(conn, "stubs")
+            store.bump_stat(conn, "last_stub_at", time.time(), absolute=True)
+            global _first_stub_logged
+            if not _first_stub_logged:
+                _first_stub_logged = True
+                logger.info(
+                    "toolrecall-light: first stub (%s, %d bytes) — dedup is active",
+                    tool_name,
+                    nbytes,
+                )
+            _maybe_gc(conn)
+            return dedup.format_stub(tool_name, res_id, nbytes)
+
+        # Content changed for the same key: check if diff presentation is beneficial
+        if dedup.is_diff_enabled() and last_id:
+            prev_content = store.get_result(conn, last_id, session_id=active_session)
+            if prev_content is not None:
+                diff_text = dedup.compute_diff(
+                    prev_content,
+                    result,
+                    max_diff_chars=dedup.get_max_diff_chars(),
+                )
+                if diff_text:
+                    new_id = uuid.uuid4().hex[:12]
+                    curr_id = store.put_result(conn, new_id, raw_hash, result, active_session)
+                    store.upsert_seen(
+                        conn,
+                        active_session,
+                        key,
+                        content_hash,
+                        generation=current_gen,
+                        served_gen=served_gen,
+                        streak=streak + 1,
+                        last_id=curr_id,
+                    )
+                    nbytes = len(result.encode("utf-8"))
+                    store.bump_stat(conn, "stubs")
+                    store.bump_stat(conn, "diff_stubs")
+                    store.bump_stat(conn, "last_stub_at", time.time(), absolute=True)
+                    _maybe_gc(conn)
+                    return dedup.format_diff_stub(tool_name, last_id, curr_id, diff_text, nbytes)
+
+        # Content changed and diff not beneficial or not enabled: pass through full content
         new_id = uuid.uuid4().hex[:12]
-        res_id = store.put_result(conn, new_id, content_hash, result, active_session)
+        store.put_result(conn, new_id, raw_hash, result, active_session)
         store.upsert_seen(
             conn,
             active_session,
             key,
             content_hash,
             generation=current_gen,
-            served_gen=served_gen,
-            streak=streak + 1,
+            served_gen=current_gen,
+            streak=0,
+            last_id=new_id,
         )
-
-        nbytes = len(result.encode("utf-8"))
-        store.bump_stat(conn, "stubs")
-        store.bump_stat(conn, "last_stub_at", time.time(), absolute=True)
-        global _first_stub_logged
-        if not _first_stub_logged:
-            _first_stub_logged = True
-            logger.info(
-                "toolrecall-light: first stub (%s, %d bytes) — dedup is active",
-                tool_name,
-                nbytes,
-            )
-        _maybe_gc(conn)
-        return dedup.format_stub(tool_name, res_id, nbytes)
+        store.bump_stat(conn, "passes")
+        return None
 
     except Exception as err:
         logger.debug("transform_tool_result hook error (failing open): %s", err)
@@ -219,6 +279,7 @@ def status() -> dict:
     # Co-installation is a status fact, not an error: answer "is core also here?"
     # in the same call that answers "is this plugin firing?".
     stats["core_conflict"] = compat.detect()
+    stats["coexistence"] = compat.get_coexistence_state()
     return stats
 
 

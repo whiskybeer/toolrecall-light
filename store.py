@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS seen (
     served_gen INTEGER NOT NULL,
     streak INTEGER NOT NULL DEFAULT 0,
     updated_at REAL NOT NULL DEFAULT 0,
+    last_id TEXT,
     PRIMARY KEY (session_id, key)
 );
 
@@ -126,6 +127,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(seen)").fetchall()}
         if "updated_at" not in cols:
             conn.execute("ALTER TABLE seen ADD COLUMN updated_at REAL NOT NULL DEFAULT 0")
+        if "last_id" not in cols:
+            conn.execute("ALTER TABLE seen ADD COLUMN last_id TEXT")
         # Index AFTER the migration: a legacy table has no updated_at yet, and
         # CREATE INDEX inside the schema script would abort the whole init.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_seen_updated ON seen(updated_at)")
@@ -205,6 +208,22 @@ def get_seen(
     return None
 
 
+def get_seen_entry(
+    conn: sqlite3.Connection,
+    session_id: str,
+    key: str,
+) -> Optional[Tuple[str, int, int, int, Optional[str]]]:
+    """Retrieve (hash, generation, served_gen, streak, last_id) for a session key."""
+    cur = conn.execute(
+        "SELECT hash, generation, served_gen, streak, last_id FROM seen WHERE session_id = ? AND key = ? LIMIT 1",
+        (session_id, key),
+    )
+    row = cur.fetchone()
+    if row:
+        return (row[0], row[1], row[2], row[3], row[4])
+    return None
+
+
 def upsert_seen(
     conn: sqlite3.Connection,
     session_id: str,
@@ -214,22 +233,24 @@ def upsert_seen(
     served_gen: int,
     streak: int,
     updated_at: Optional[float] = None,
+    last_id: Optional[str] = None,
 ) -> None:
     """Record or update tracking state for a key within a session."""
     now = time.time() if updated_at is None else updated_at
     with conn:
         conn.execute(
             """
-            INSERT INTO seen (session_id, key, hash, generation, served_gen, streak, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO seen (session_id, key, hash, generation, served_gen, streak, updated_at, last_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, key) DO UPDATE SET
                 hash = excluded.hash,
                 generation = excluded.generation,
                 served_gen = excluded.served_gen,
                 streak = excluded.streak,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                last_id = COALESCE(excluded.last_id, seen.last_id)
             """,
-            (session_id, key, content_hash, generation, served_gen, streak, now),
+            (session_id, key, content_hash, generation, served_gen, streak, now, last_id),
         )
 
 
@@ -280,6 +301,7 @@ def get_stats(conn: sqlite3.Connection) -> dict:
         "hook_calls": 0.0,
         "passes": 0.0,
         "stubs": 0.0,
+        "diff_stubs": 0.0,
         "last_stub_at": 0.0,
         "last_load_at": 0.0,
         "gc_runs": 0.0,

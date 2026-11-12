@@ -109,3 +109,63 @@ def test_should_dedup_custom_max_chars(monkeypatch):
     # 0 = unlimited -> True
     monkeypatch.setenv("HERMES_TOOL_RECALL_MAX_CHARS", "0")
     assert should_dedup("terminal", {}, payload_3mb) is True
+
+
+def test_strip_ansi():
+    from dedup import strip_ansi
+
+    colored = "\x1b[31mError:\x1b[0m test failed in \x1b[1;32mmain.py\x1b[0m"
+    assert strip_ansi(colored) == "Error: test failed in main.py"
+
+
+def test_strip_volatile_patterns():
+    from dedup import strip_volatile_patterns
+
+    sample = (
+        "Finished in 0.42s\n"
+        "Started at 2026-11-12T08:30:00Z\n"
+        "Memory allocated at 0x7ffd9b821a40, pid=48192\n"
+        "Task took 15ms"
+    )
+    scrubbed = strip_volatile_patterns(sample)
+    assert "<duration>" in scrubbed
+    assert "<timestamp>" in scrubbed
+    assert "<addr>" in scrubbed
+    assert "pid=<pid>" in scrubbed
+
+
+def test_normalize_output():
+    from dedup import normalize_output
+
+    out1 = "Result: ok   \r\nExecuted in 1.20s \r\n"
+    out2 = "Result: ok\nExecuted in 1.45s\n"
+    assert normalize_output(out1) == normalize_output(out2)
+
+    # JSON normalization
+    json1 = '{"b": 2, "a": 1, "timestamp": "2026-11-12", "nonce": "abc"}'
+    json2 = '{"a": 1, "b": 2}'
+    assert normalize_output(json1) == normalize_output(json2)
+
+
+def test_compute_diff_and_format_stub():
+    from dedup import compute_diff, format_diff_stub
+
+    prev = "\n".join(f"line {i}" for i in range(200))
+    # change just 1 line
+    curr = "\n".join(f"line {i}" if i != 50 else "line 50 MODIFIED" for i in range(200))
+
+    diff = compute_diff(prev, curr, max_diff_chars=1000)
+    assert diff is not None
+    assert "line 50 MODIFIED" in diff
+
+    stub = format_diff_stub("terminal", "prev-1", "curr-2", diff, len(curr.encode("utf-8")))
+    assert "[toolrecall-light] modified output for terminal" in stub
+    assert "Diff against earlier result prev-1" in stub
+    assert 'recall_result(result_id="curr-2")' in stub
+
+    # When outputs are identical -> no diff
+    assert compute_diff(prev, prev) is None
+
+    # When diff is too large / not beneficial -> None
+    drastic = "completely different content\n" * 50
+    assert compute_diff(prev, drastic, max_diff_chars=100) is None

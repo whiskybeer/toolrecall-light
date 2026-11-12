@@ -77,6 +77,45 @@ def detect(hermes_home_path: Path | None = None) -> dict[str, Any]:
     return {"core_present": bool(findings), "findings": findings}
 
 
+def is_daemon_socket_active(socket_path: str | Path | None = None) -> bool:
+    """Return True if a ToolRecall daemon UDS socket is actively listening."""
+    import socket
+
+    paths: list[Path] = []
+    if socket_path is not None:
+        paths.append(Path(socket_path))
+    else:
+        env_path = os.environ.get("TOOLRECALL_UDS_PATH")
+        if env_path:
+            paths.append(Path(env_path))
+        paths.append(Path("/tmp/toolrecall.sock"))
+        paths.append(Path.home() / ".toolrecall" / "toolrecall.sock")
+
+    for p in paths:
+        if p.exists():
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.settimeout(0.1)
+                s.connect(str(p))
+                s.close()
+                return True
+            except OSError:
+                pass
+    return False
+
+
+def get_coexistence_state(hermes_home_path: Path | None = None) -> dict[str, Any]:
+    """Return coexistence diagnostics including socket availability."""
+    base = detect(hermes_home_path)
+    daemon_online = is_daemon_socket_active()
+    return {
+        "core_present": base["core_present"],
+        "findings": base["findings"],
+        "daemon_online": daemon_online,
+        "coexistence_mode": "daemon_coexisting" if (base["core_present"] or daemon_online) else "standalone",
+    }
+
+
 def warn_if_core_present(hermes_home_path: Path | None = None) -> dict[str, Any]:
     """Log one actionable warning when a full stack is detected alongside us."""
     result = detect(hermes_home_path)

@@ -137,6 +137,49 @@ If the agent needs the full traceback or compiler lines, it invokes `recall_resu
 ```
 `recall_result` returns the exact byte-for-byte original content in **sub-millisecond time**.
 
+### Sliced & Filtered Recall (Avoid Context Blowout)
+
+Instead of dumping an entire 40 KB log back into context when you only need a specific error or section, `recall_result` supports targeted inspection:
+
+```json
+// Line range slicing (1-indexed)
+{"result_id": "50f59afa067a", "lines": "1-50"}
+
+// First or last N lines
+{"result_id": "50f59afa067a", "head": 20}
+{"result_id": "50f59afa067a", "tail": 25}
+
+// Regex or substring search with line numbers
+{"result_id": "50f59afa067a", "grep": "ERROR:"}
+```
+
+### Diff-Based Partial Stubs for Modified Outputs
+
+When a command re-runs and produces a modified output where only a few lines changed (e.g. 1 test failing in a 2,000-line suite, or a minor build delta), `toolrecall-light` computes a unified diff. If the diff is substantially smaller than re-sending the full payload, it serves a diff stub:
+
+```
+[toolrecall-light] modified output for terminal (320 bytes diff vs 38400 bytes full).
+Diff against earlier result 50f59afa067a:
+--- previous (50f59afa067a)
++++ current (61a87b3c21df)
+@@ -42,3 +42,3 @@
+-test_auth PASSED
++test_auth FAILED: connection reset
+Call recall_result(result_id="61a87b3c21df") if you need the full content.
+```
+
+### Volatile Output Normalization
+
+Tool outputs often fail exact-match deduplication because of ephemeral runtime noise: execution durations (`Finished in 0.42s`), timestamps, ANSI terminal escape codes, or JSON formatting differences.
+
+`toolrecall-light` normalizes volatile noise before hashing:
+- Strips ANSI color and cursor codes
+- Scrubs execution timings and timestamps
+- Normalizes CRLF and trailing whitespace
+- Canonically sorts JSON keys and strips non-semantic metadata
+
+The un-normalized, exact raw bytes are always preserved in local storage for `recall_result`.
+
 ---
 
 ## Run one, not both (co-installation with ToolRecall core)
@@ -247,6 +290,9 @@ hermes plugins validate .
 | `HERMES_TOOLRECALL_LIGHT_MIN_CHARS` | `2000` | Minimum character length before deduplication is considered. |
 | `HERMES_TOOLRECALL_LIGHT_MAX_CHARS` | `2000000` | Maximum character length (2 MB; `0` = unlimited). |
 | `HERMES_TOOLRECALL_LIGHT_MAX_STUB_STREAK` | `5` | Consecutive stubs before forcing full pass-through once. |
+| `HERMES_TOOLRECALL_LIGHT_NORMALIZE` | `1` | Normalize volatile runtime noise (ANSI, execution times, timestamps, JSON keys). |
+| `HERMES_TOOLRECALL_LIGHT_DIFF` | `1` | Serve unified diff stubs for modified outputs when significantly smaller than full send. |
+| `HERMES_TOOLRECALL_LIGHT_MAX_DIFF_CHARS` | `4000` | Maximum diff character size to consider for diff stubs. |
 | `ttl_hours` | `24` | TTL duration for database garbage collection. |
 
 ---

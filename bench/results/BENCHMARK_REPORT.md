@@ -11,6 +11,8 @@
 | 2. Macro receipts (`state.db`) | **Measured** (snapshot) | SQL over `~/.hermes/state.db` | Duplication in real transcripts. Re-computed 2026-11: 659 sessions, 28,866 candidates ≥2 KB, 16,859 duplicate rows, 74.6 MB. |
 | 4. Streak guard / capture efficiency | **Derived** | replay of the duplicate corpus | Share of duplicates still caught at `streak = 5` — not a cost reduction. |
 | 5. Recall latency | **Microbenchmark** | `run_benchmark.py` | In-process SQLite round-trip (~0.28 ms). |
+| 6. Cross-turn exact dedup | **Measured** (live session) | `hermes chat` with `--usage-file` | Suppression of exact 40 KB results across turn boundaries (−24.6% to −29.6% prompt tokens). |
+| 7. Cross-turn diff stubs & sliced recall | **Measured** (live session) | `bench/run_live_multiturn_bench.py` | Suppression of modified 40 KB results via 178-byte diff stubs (−24.3% prompt tokens; 99.2% sliced recall reduction). |
 
 The modelled percentage holds **only** in its own regime (small fixed context, duplicates dominate
 it). A measured live session with a ~12 k-token system prompt and 6 × 7 KB duplicates showed ~0.5 %
@@ -109,3 +111,12 @@ the plugin keys on `(tool, args)` per session.
 **Intra-turn is the opposite.** Six identical 40,363-byte calls in one turn: 306,130 prompt tokens with
 the plugin vs 254,662 without (8 vs 7 API calls). Core's guardrail (`IDENTICAL_RESULT_STUB_MIN_CHARS = 512`,
 from the 2nd repeat, `reset_for_turn()`) already covers that case more cheaply.
+
+## 7. Measured — cross-turn diff stubs & sliced recall (live session, billed ledger)
+
+Four-turn session comparing modified outputs (1 line changed in 640 lines / 39,680 bytes) and targeted sliced recall. See [LIVE_MULTITURN_REPORT.md](LIVE_MULTITURN_REPORT.md) for full breakdown.
+
+- **Prompt Tokens:** 679,544 (treatment) vs 897,904 (baseline) — **−24.32% prompt token reduction**.
+- **Turn 2 Payload:** Dropped from 40,363 bytes to a **178-byte unified diff stub** (**99.56% payload reduction**).
+- **Targeted Recall:** `lines="298-302"` returned 5 lines (312 bytes vs 39,680 bytes = **99.21% smaller** than full recall).
+

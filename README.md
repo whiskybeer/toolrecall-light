@@ -109,6 +109,13 @@ results (3 runs/arm) and 40,363-char results (2 runs/arm), `deepseek-v4.1-flash-
 **631,951 vs 897,904** and **677,073 vs 881,377** prompt tokens (−29.6 % / −23.2 %), cost
 $0.0024 vs $0.0031–0.0037. See the table above; turn-1 baseline drift is called out there.
 
+**4c. Across turns with modified outputs (diff stubs & sliced recall).** 4-turn session where turn 2 modifies 1 line of a 40 KB file:
+* Without diff stubs, turn 2 re-sends all 40,363 bytes because the exact hash does not match.
+* With diff stubs enabled (`HERMES_TOOLRECALL_LIGHT_DIFF=1`), turn 2 delivers a **178-byte unified diff stub** (**99.56% payload reduction**).
+* Total prompt tokens: **679,544** (plugin) vs **897,904** (baseline) — **−24.3 %**.
+* Targeted sliced recall (`lines="298-302"`) returned 5 lines (312 bytes vs 39,680 bytes = **99.2 % smaller** than full recall).
+See [bench/results/LIVE_MULTITURN_REPORT.md](bench/results/LIVE_MULTITURN_REPORT.md) for full receipts.
+
 **Net:** the plugin's measured value is cross-turn duplicate suppression, not intra-turn.
 
 ### 5. Microbenchmark — recall latency

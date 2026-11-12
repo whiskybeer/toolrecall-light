@@ -58,7 +58,20 @@ def slice_content(
     grep: Optional[str] = None,
 ) -> tuple[str, bool, dict[str, Any]]:
     """Slice or filter content based on line ranges, head/tail limits, or regex grep."""
-    all_lines = content.splitlines()
+    raw_text = content
+    is_json_wrapped = False
+    json_envelope: dict[str, Any] = {}
+    if content.startswith("{") and content.endswith("}"):
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict) and "output" in parsed and isinstance(parsed["output"], str):
+                raw_text = parsed["output"]
+                is_json_wrapped = True
+                json_envelope = parsed
+        except Exception:
+            pass
+
+    all_lines = raw_text.splitlines()
     total_lines = len(all_lines)
     sliced = False
 
@@ -119,6 +132,11 @@ def slice_content(
         result_text = "\n".join(f"L{i}: {line}" for i, line in selected)
     else:
         result_text = "\n".join(line for _, line in selected)
+
+    if is_json_wrapped and json_envelope:
+        final_envelope = dict(json_envelope)
+        final_envelope["output"] = result_text
+        result_text = json.dumps(final_envelope)
 
     return result_text, True, {
         "total_lines": total_lines,
